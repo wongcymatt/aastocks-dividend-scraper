@@ -1,0 +1,9 @@
+# HK stock symbols, 5-digit zero-padded, one per line.
+# Lines starting with '#' and blank lines are ignored.
+#
+# Test set:
+00005
+00001
+00016
+00388
+00700
