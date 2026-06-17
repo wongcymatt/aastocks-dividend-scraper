@@ -1,10 +1,10 @@
 """Scrape dividend history from AAStocks and write per-symbol CSVs.
 
 Usage:
-    python scrape_dividend.py                  # scrape every symbol in stocks.txt (Traditional Chinese, with transform)
+    python scrape_dividend.py                  # scrape every symbol in stocks.txt (English, with transform)
     python scrape_dividend.py --symbol 01114   # scrape a single symbol
     python scrape_dividend.py --symbol 00005 --symbol 00700
-    python scrape_dividend.py --lang en        # English mobile page (with transform)
+    python scrape_dividend.py --lang tc        # Traditional Chinese page (with transform)
     python scrape_dividend.py --lang en --symbol 00005 --no-transform  # English page, raw output
 
 Each row in stocks.txt should be a single HK stock symbol, 5-digit
@@ -173,8 +173,8 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"path to symbols list (default: {DEFAULT_STOCKS_FILE.name})")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
                         help=f"directory for CSV output (default: {DEFAULT_OUTPUT_DIR.name})")
-    parser.add_argument("--lang", choices=["tc", "en"], default="tc",
-                        help="page language: tc=Traditional Chinese, en=English (default: tc)")
+    parser.add_argument("--lang", choices=["tc", "en"], default="en",
+                        help="page language: en=English (default), tc=Traditional Chinese")
     parser.add_argument("--layout", choices=["mobile", "desktop"], default="mobile",
                         help="page layout (default: mobile)")
     parser.add_argument("--transform", action=argparse.BooleanOptionalAction, default=True,

@@ -5,12 +5,12 @@ stocks from [AAStocks](https://www.aastocks.com) and saves one CSV per
 stock.
 
 Two languages are supported, both via plain `requests` GETs (no headless
-browser needed):
+browser needed). The default is `en` (English).
 
 | `--lang` | URL |
 |---|---|
-| `tc` (default) | `https://m.aastocks.com/tc/stocks/analysis/dividend.aspx?symbol={SYMBOL}` |
-| `en` | `https://m.aastocks.com/en/stocks/analysis/dividend.aspx?symbol={SYMBOL}` |
+| `en` (default) | `https://m.aastocks.com/en/stocks/analysis/dividend.aspx?symbol={SYMBOL}` |
+| `tc` | `https://m.aastocks.com/tc/stocks/analysis/dividend.aspx?symbol={SYMBOL}` |
 
 Both return the full dividend history table embedded in the static HTML
 response. The English page uses a shorter `Accept-Language: en-US,en;q=0.9`
@@ -42,16 +42,16 @@ The default file lists five large-cap test symbols:
 00700   # Tencent
 ```
 
-### Default: Chinese with Step 1 transform
+### Default: English with Step 1 transform
 
 ```bash
 python scrape_dividend.py
 ```
 
-### English page
+### Traditional Chinese page
 
 ```bash
-python scrape_dividend.py --lang en
+python scrape_dividend.py --lang tc
 ```
 
 ### One-off run
@@ -101,27 +101,43 @@ columns. Use `--no-transform` to get the original raw 13-column output.
 | Column | Example | Notes |
 |---|---|---|
 | `symbol` | `01114` | Added by the scraper. |
-| `announce_date` | `2025-08-22` | ISO date. |
-| `year_ended` | `2025-12` | ISO year-month. |
-| `event_name_en` | `Interim Results` | English event name (translated for `--lang tc`). |
-| `event_name_zh` | `中期業績` | Original event name. |
-| `event_category` | `DIVIDEND` | One of: `DIVIDEND`, `NO_DIVIDEND`, `BONUS_SHARES`, `RIGHTS_ISSUE`, `STOCK_SPLIT`, `INSPECIE`, `PREFERRED_OFFERING`, `CORPORATE_ACTION`. |
-| `event_type` | `INTERIM` | One of: `INTERIM`, `FINAL`, `FIRST_INTERIM` (Q1), `SECOND_INTERIM` (Q2), `THIRD_INTERIM` (Q3), `SPECIAL`, `ORDINARY`. |
-| `particular_zh` | `股息：港元 0.8000` | Original Chinese text (empty when scraped from English page). |
-| `particular_en` | `D :USD 0.1000 ...` | English text (translated for `--lang tc`). |
-| `dividend_type` | `REGULAR` / `SPECIAL` | Empty when not a cash dividend. |
+| `announce_date` | `2025-08-22` | ISO date (announcement date). |
+| `year_ended` | `2025-12` | ISO year-month of the reporting period. |
+| `event_name` | `Interim` (en) / `中期業績` (tc) | The event name **in the source language** of the scrape. |
+| `event_name_translated` | `Interim Results` | English translation of `event_name` (TC source only). Empty when the source was already English. |
+| `event_category` | `DIVIDEND` | High-level bucket. One of: `DIVIDEND`, `NO_DIVIDEND`, `BONUS_SHARES`, `RIGHTS_ISSUE`, `STOCK_SPLIT`, `INSPECIE`, `PREFERRED_OFFERING`, `CORPORATE_ACTION` (catch-all). |
+| `event_type` | `INTERIM` | Granular classification. One of: `INTERIM`, `FINAL`, `FIRST_INTERIM` (Q1), `SECOND_INTERIM` (Q2), `THIRD_INTERIM` (Q3), `SPECIAL`, `ORDINARY` (catch-all). |
+| `particular` | `D :USD 0.1000 ...` (en) / `股息：美元 0.1000 ...` (tc) | Original particular-cell text from the scraped page. |
+| `particular_translated` | `Dividend: USD 0.1000 ...` | English translation of `particular` (TC source only). Empty when the source was English. |
+| `dividend_type` | `REGULAR` / `SPECIAL` | Empty when not a cash dividend. `SPECIAL` means the AAStocks page tagged it as `SD :` (Special Dividend) or `特別股息`. |
 | `amount_primary` | `0.1000` | Primary dividend amount. |
-| `currency_primary` | `USD` | ISO 4217 code (USD, HKD, CNY, GBP, …). RMB is normalized to CNY. |
-| `amount_hkd_equiv` | `0.783972` | HKD-equivalent amount when listed on the page; empty otherwise. |
-| `currency_options` | `["USD","GBP","HKD"]` | JSON array of all currencies mentioned in the cell. |
-| `electable_currencies` | `["GBP","HKD"]` | JSON array of currencies the shareholder can elect. |
-| `is_special` | `true` / `false` | Whether this is a special dividend. |
-| `ex_date` | `2025-09-04` | ISO date. |
-| `book_close` | `2025/09/08-2025/09/09` | Date range, kept as text. |
-| `payable_date` | `2025-09-26` | ISO date. |
+| `currency_primary` | `USD` | ISO 4217 code of the primary amount (USD, HKD, CNY, GBP, SGD, AUD, EUR, JPY). The Chinese currency name `人民幣`/`RMB` is normalized to `CNY`. |
+| `amount_hkd_equiv` | `0.783972` | The HKD equivalent listed on the page (e.g. "Equivalent to approximately HKD 0.78"). Empty if the page did not list one. |
+| `all_currency_amounts` | `{"USD":0.1,"HKD":0.777722}` | JSON object of every `{currency: amount}` pair explicitly present in the cell. Always includes `amount_primary`; also includes `HKD` when `amount_hkd_equiv` is present. Empty `{}` for non-dividend rows. |
+| `currency_options` | `["USD","GBP","HKD"]` | JSON array of every ISO currency code that appears in the cell, including currencies that are mentioned without an explicit amount (e.g. `GBP` in "with STERLING and HKD option"). |
+| `electable_currencies` | `["GBP","HKD"]` | JSON array of currencies the shareholder can elect to receive in (i.e. everything in `currency_options` other than the primary). Empty when there's no election clause. |
+| `is_special` | `true` / `false` | `true` if this row is a special dividend. |
+| `ex_date` | `2025-09-04` | ISO date (ex-dividend date). |
+| `book_close` | `2025/09/08-2025/09/09` | Book-close period; may be a date range or a single date. Kept as text. |
+| `payable_date` | `2025-09-26` | ISO date (payable date). |
 
 CSVs are written with a UTF-8 BOM (`utf-8-sig`) so that Chinese / English
 characters display correctly when opened directly in Excel.
+
+### How `event_category` and `event_type` are derived
+
+- **`event_category`** is matched against the `particular` cell text. The
+  most common patterns are `D :USD …` (English) / `股息：美元 …` (Chinese)
+  for `DIVIDEND`, and `No Dividend` / `無派息` for `NO_DIVIDEND`. Anything
+  unrecognized falls back to `CORPORATE_ACTION`.
+- **`event_type`** is matched against the `event` cell. `Interim` /
+  `中期業績` → `INTERIM`, `Final` / `末期業績` → `FINAL`. `Q1`/`Q2`/`Q3`
+  and `Interim 1/2/3` map to `FIRST_INTERIM`/`SECOND_INTERIM`/
+  `THIRD_INTERIM` (more specific patterns are checked first). The English
+  shorthand `SD :` triggers `SPECIAL`. Anything else → `ORDINARY`.
+- **`is_special`** is set independently from the category — it fires when
+  the page uses `SD :` (English) or `特別股息` (Chinese) for the
+  particular cell, regardless of category.
 
 ## How it works
 

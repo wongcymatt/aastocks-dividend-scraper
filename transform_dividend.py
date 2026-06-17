@@ -168,6 +168,7 @@ class ParsedDividend:
         "primary_amount", "currency_primary",
         "hkd_equiv_amount", "currency_options",
         "electable_currencies", "is_special", "dividend_type",
+        "all_currency_amounts",
     )
 
     def __init__(
@@ -187,6 +188,11 @@ class ParsedDividend:
         self.electable_currencies = electable_currencies or []
         self.is_special         = is_special
         self.dividend_type      = dividend_type
+        # Dict of {currency_code: amount} for every currency amount explicitly
+        # present in the particular cell.  Includes the primary amount and the
+        # HKD equivalent (when listed).  Currencies mentioned only by code (no
+        # associated amount) are not included here.
+        self.all_currency_amounts: dict[str, float] = {}
 
 
 def _normalize_currency(word: str) -> str | None:
@@ -230,10 +236,14 @@ def _parse_dividend_en(particular: str) -> ParsedDividend | None:
     if ccy == "RMB":
         ccy = "CNY"
     p.currency_primary = ccy
+    primary_amt: float | None = None
     try:
-        p.primary_amount = float(m.group("amount"))
+        primary_amt = float(m.group("amount"))
+        p.primary_amount = primary_amt
     except ValueError:
         p.primary_amount = None
+    if primary_amt is not None:
+        p.all_currency_amounts[ccy] = primary_amt
 
     # HKD equivalent: "Equivalent to approximately HKD 3.522942" or "approx. HKD 0.783972"
     hm = re.search(
@@ -242,7 +252,9 @@ def _parse_dividend_en(particular: str) -> ParsedDividend | None:
     )
     if hm:
         try:
-            p.hkd_equiv_amount = float(hm.group("hkd_amount"))
+            hkd_amt = float(hm.group("hkd_amount"))
+            p.hkd_equiv_amount = hkd_amt
+            p.all_currency_amounts["HKD"] = hkd_amt
         except ValueError:
             pass
 
@@ -284,7 +296,9 @@ def _parse_dividend_tc(particular: str) -> ParsedDividend | None:
         return None
     p.currency_primary = ccy_code
     try:
-        p.primary_amount = float(m.group("amount"))
+        primary_amt = float(m.group("amount"))
+        p.primary_amount = primary_amt
+        p.all_currency_amounts[ccy_code] = primary_amt
     except ValueError:
         pass
 
@@ -292,7 +306,9 @@ def _parse_dividend_tc(particular: str) -> ParsedDividend | None:
     hm = re.search(r"約相等於\s*(?P<hkd_amount>[\d.]+)\s*港元", particular)
     if hm:
         try:
-            p.hkd_equiv_amount = float(hm.group("hkd_amount"))
+            hkd_amt = float(hm.group("hkd_amount"))
+            p.hkd_equiv_amount = hkd_amt
+            p.all_currency_amounts["HKD"] = hkd_amt
         except ValueError:
             pass
 
@@ -391,20 +407,36 @@ def transform_rows(rows: list[dict], symbol: str) -> list[dict]:
         category  = _classify_event(particular, lang)
         event_type = _classify_event_type(event, lang)
 
+        # Event name / particular text in source language and, when the source
+        # is Chinese, a rough English translation.  We don't synthesize an
+        # English event name when scraping the English page (the page text
+        # IS the English name).
+        if lang == "tc":
+            event_name_src = event
+            event_name_other = _translate_event_name(event, particular)
+            particular_src = particular
+            particular_other = _translate_particular_tc(particular)
+        else:
+            event_name_src = event
+            event_name_other = ""
+            particular_src = particular
+            particular_other = ""
+
         out_row: dict = {
             "symbol":            symbol,
             "announce_date":    row.get("announce_date", ""),
             "year_ended":       row.get("year_ended", ""),
-            "event_name_en":     _translate_event_name(event, particular) if lang == "tc" else event,
-            "event_name_zh":    event,
+            "event_name":       event_name_src,
+            "event_name_translated": event_name_other,
             "event_category":   category,
             "event_type":       event_type,
-            "particular_zh":    particular if lang == "tc" else "",
-            "particular_en":    _translate_particular_tc(particular) if lang == "tc" else particular,
+            "particular":       particular_src,
+            "particular_translated": particular_other,
             "dividend_type":    "",
             "amount_primary":   "",
             "currency_primary": "",
             "amount_hkd_equiv": "",
+            "all_currency_amounts": "{}",
             "currency_options": "[]",
             "electable_currencies": "[]",
             "is_special":       "",
@@ -422,6 +454,10 @@ def transform_rows(rows: list[dict], symbol: str) -> list[dict]:
                     "amount_primary":        str(pd.primary_amount) if pd.primary_amount is not None else "",
                     "currency_primary":     pd.currency_primary or "",
                     "amount_hkd_equiv":      str(pd.hkd_equiv_amount) if pd.hkd_equiv_amount is not None else "",
+                    "all_currency_amounts":  json.dumps(
+                        {k: round(v, 6) for k, v in sorted(pd.all_currency_amounts.items())},
+                        separators=(",", ":"),
+                    ),
                     "currency_options":      json.dumps(sorted(set(pd.currency_options)), separators=(",", ":")),
                     "electable_currencies": json.dumps(sorted(set(pd.electable_currencies)), separators=(",", ":")),
                     "is_special":            "true" if pd.is_special else "false",
@@ -437,16 +473,17 @@ transform_rows.OUTPUT_COLUMNS = [
     "symbol",
     "announce_date",
     "year_ended",
-    "event_name_en",
-    "event_name_zh",
+    "event_name",
+    "event_name_translated",
     "event_category",
     "event_type",
-    "particular_zh",
-    "particular_en",
+    "particular",
+    "particular_translated",
     "dividend_type",
     "amount_primary",
     "currency_primary",
     "amount_hkd_equiv",
+    "all_currency_amounts",
     "currency_options",
     "electable_currencies",
     "is_special",
