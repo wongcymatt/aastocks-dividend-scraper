@@ -1,17 +1,19 @@
 """Parse dividend history HTML from AAStocks.
 
 Both Traditional Chinese and English mobile/desktop pages are supported.
+Both languages return the full static HTML — no JavaScript execution
+or headless browser is required.
 
-Chinese (static HTML, no browser needed):
+Chinese:
     https://m.aastocks.com/tc/stocks/analysis/dividend.aspx?symbol=00005
     Headers (8 columns):
         公佈日期 | 年度/截至 | 派息事項 | 派息內容 | 方式 | 除淨日 | 截止過戶日期 | 派息日
 
-English (JavaScript-rendered; requires Playwright):
+English:
     https://m.aastocks.com/en/stocks/analysis/dividend.aspx?symbol=00005
-    Headers (7 columns, order may vary):
-        Announce Date | Year Ended | Event | Dividend Details | Dividend Type |
-        Ex-Date | Book Close | Payable Date
+    Headers (8 columns, order may vary):
+        Announce Date | Year Ended | Event | Particular | Type |
+        Ex-Date | Book Close Date | Payable Date
 """
 from __future__ import annotations
 
