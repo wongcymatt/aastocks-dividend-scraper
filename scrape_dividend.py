@@ -1,10 +1,11 @@
 """Scrape dividend history from AAStocks and write per-symbol CSVs.
 
 Usage:
-    python scrape_dividend.py                  # scrape every symbol in stocks.txt
+    python scrape_dividend.py                  # scrape every symbol in stocks.txt (Traditional Chinese, with transform)
     python scrape_dividend.py --symbol 01114   # scrape a single symbol
     python scrape_dividend.py --symbol 00005 --symbol 00700
-    python scrape_dividend.py --url-template desktop
+    python scrape_dividend.py --lang en        # English mobile page (with transform)
+    python scrape_dividend.py --lang en --symbol 00005 --no-transform  # English page, raw output
 
 Each row in stocks.txt should be a single HK stock symbol, 5-digit
 zero-padded (e.g. 01114, 00005).  Lines starting with '#' and blank
@@ -14,35 +15,34 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 import random
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
 
 import requests
 
 from parse_dividend import parse_dividend_html
 
-# Default headers.  AAStocks returns a full static HTML response with these,
-# so we do not need a real browser.
+# Default headers for Traditional Chinese pages (static HTML, no browser needed).
 USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
     "Mobile/15E148 Safari/604.1"
 )
 
-# Two URL templates.  Both return the same dividend table; mobile is the
-# user's preferred target.
+# URL templates keyed by (layout, language).
+# layout: "mobile" | "desktop"
+# language: "tc" | "en"
 URL_TEMPLATES = {
-    "mobile": "https://m.aastocks.com/tc/stocks/analysis/dividend.aspx?symbol={symbol}",
-    "desktop": "https://www.aastocks.com/tc/stocks/analysis/company-fundamental/dividend-history?symbol={symbol}",
+    ("mobile", "tc"):  "https://m.aastocks.com/tc/stocks/analysis/dividend.aspx?symbol={symbol}",
+    ("desktop", "tc"): "https://www.aastocks.com/tc/stocks/analysis/company-fundamental/dividend-history?symbol={symbol}",
+    ("mobile", "en"):  "https://m.aastocks.com/en/stocks/analysis/dividend.aspx?symbol={symbol}",
+    ("desktop", "en"): "https://www.aastocks.com/en/stocks/analysis/company-fundamental/dividend-history?symbol={symbol}",
 }
 
-# Output column order for CSVs.  Includes a leading 'symbol' so multiple
-# per-symbol files can be concatenated and still keep their identity.
-OUTPUT_COLUMNS = [
+# Raw output column order for CSVs (--no-transform mode).
+RAW_OUTPUT_COLUMNS = [
     "symbol",
     "announce_date",
     "announce_date_raw",
@@ -74,14 +74,13 @@ def read_symbols(path: Path) -> list[str]:
     return symbols
 
 
-def fetch_page(symbol: str, url_template: str, session: requests.Session,
-               timeout: float = 30.0) -> tuple[int | None, str]:
-    """GET the dividend page for ``symbol``.  Returns (status_code, body).
+def fetch_page_tc(symbol: str, layout: str, session: requests.Session,
+                  timeout: float = 30.0) -> tuple[int | None, str]:
+    """GET the Traditional Chinese dividend page. Returns (status_code, body).
 
-    The body is decoded using the response's apparent encoding.  On error,
-    status_code is None and body is the exception message.
+    The Chinese pages return full static HTML; no browser needed.
     """
-    url = url_template.format(symbol=symbol)
+    url = URL_TEMPLATES[(layout, "tc")].format(symbol=symbol)
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -95,37 +94,69 @@ def fetch_page(symbol: str, url_template: str, session: requests.Session,
         return None, str(e)
 
 
-def write_csv(rows: list[dict], symbol: str, output_dir: Path) -> Path:
+def fetch_page_en(symbol: str, layout: str, session: requests.Session,
+                  timeout: float = 30.0) -> tuple[int | None, str]:
+    """GET the English dividend page. Returns (status_code, body).
+
+    The English page returns full static HTML with the dividend table embedded.
+    The key is Accept-Language: en-US,en;q=0.9 to get English content.
+    """
+    url = URL_TEMPLATES[(layout, "en")].format(symbol=symbol)
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": url,
+    }
+    try:
+        resp = session.get(url, headers=headers, timeout=timeout)
+        return resp.status_code, resp.text
+    except requests.RequestException as e:
+        return None, str(e)
+
+
+def write_csv(rows: list[dict], symbol: str, output_dir: Path,
+              columns: list[str]) -> Path:
     """Write rows to ``output/dividend_<symbol>.csv`` with utf-8-sig BOM."""
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"dividend_{symbol}.csv"
     with out_path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=OUTPUT_COLUMNS)
+        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            # Augment row with the symbol so the CSV is self-describing.
             full_row = {"symbol": symbol, **row}
             writer.writerow(full_row)
     return out_path
 
 
-def scrape_one(symbol: str, url_template: str, output_dir: Path,
-               session: requests.Session) -> tuple[int, str]:
-    """Scrape a single symbol.  Returns (row_count, status)."""
-    status, body = fetch_page(symbol, url_template, session)
+def scrape_one(symbol: str, layout: str, language: str, output_dir: Path,
+               session: requests.Session,
+               transform: bool) -> tuple[int, str]:
+    """Scrape a single symbol. Returns (row_count, status)."""
+    if language == "en":
+        status, body = fetch_page_en(symbol, layout, session)
+    else:
+        status, body = fetch_page_tc(symbol, layout, session)
 
     if status is None:
         return 0, f"network_error: {body[:80]}"
     if status != 200:
         return 0, f"http_{status}"
 
-    rows, err = parse_dividend_html(body)
+    rows, err = parse_dividend_html(body, language=language)
     if err == "no_table":
         return 0, "no_table_on_page"
     if err == "empty_table":
         return 0, "table_empty"
 
-    out_path = write_csv(rows, symbol, output_dir)
+    if transform:
+        from transform_dividend import transform_rows
+        rows = transform_rows(rows, symbol)
+        columns = transform_rows.OUTPUT_COLUMNS
+    else:
+        columns = RAW_OUTPUT_COLUMNS
+
+    out_path = write_csv(rows, symbol, output_dir, columns)
     return len(rows), f"wrote_{out_path.name}"
 
 
@@ -136,14 +167,19 @@ def iter_sleep(lo: float = 1.5, hi: float = 3.5) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--symbol", action="append", help="scrape a single symbol (repeatable)")
+    parser.add_argument("--symbol", action="append",
+                        help="scrape a single symbol (repeatable)")
     parser.add_argument("--stocks-file", type=Path, default=DEFAULT_STOCKS_FILE,
                         help=f"path to symbols list (default: {DEFAULT_STOCKS_FILE.name})")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
                         help=f"directory for CSV output (default: {DEFAULT_OUTPUT_DIR.name})")
-    parser.add_argument("--url-template", choices=sorted(URL_TEMPLATES),
-                        default="mobile",
-                        help="which AAStocks URL pattern to use (default: mobile)")
+    parser.add_argument("--lang", choices=["tc", "en"], default="tc",
+                        help="page language: tc=Traditional Chinese, en=English (default: tc)")
+    parser.add_argument("--layout", choices=["mobile", "desktop"], default="mobile",
+                        help="page layout (default: mobile)")
+    parser.add_argument("--transform", action=argparse.BooleanOptionalAction, default=True,
+                        help="run Step 1 transform: classify events + extract cash dividend amounts "
+                             "(default: enabled). Use --no-transform to get raw scraped output.")
     parser.add_argument("--delay-min", type=float, default=1.5,
                         help="minimum delay between requests in seconds (default 1.5)")
     parser.add_argument("--delay-max", type=float, default=3.5,
@@ -151,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.symbol:
-        symbols: list[str] = list(dict.fromkeys(args.symbol))  # de-dupe, preserve order
+        symbols: list[str] = list(dict.fromkeys(args.symbol))
     else:
         if not args.stocks_file.exists():
             print(f"ERROR: stocks file not found: {args.stocks_file}", file=sys.stderr)
@@ -161,10 +197,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: no symbols in {args.stocks_file}", file=sys.stderr)
             return 2
 
-    url_template = URL_TEMPLATES[args.url_template]
-    print(f"Scraping {len(symbols)} symbol(s) via {args.url_template}: {url_template}")
+    layout = args.layout
+    lang = args.lang
+    transform = args.transform
+
+    lang_label = "English" if lang == "en" else "Traditional Chinese"
+    print(f"Scraping {len(symbols)} symbol(s) | layout={layout} | lang={lang_label} | transform={transform}")
     print(f"Output dir: {args.output_dir}")
-    print(f"Delay between requests: {args.delay_min:.1f}s – {args.delay_max:.1f}s")
+    print(f"Delay between requests: {args.delay_min:.1f}s - {args.delay_max:.1f}s")
     print()
 
     session = requests.Session()
@@ -174,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for i, sym in enumerate(symbols, 1):
         print(f"[{i}/{len(symbols)}] {sym} ...", end=" ", flush=True)
-        n, status = scrape_one(sym, url_template, args.output_dir, session)
+        n, status = scrape_one(sym, layout, lang, args.output_dir, session, transform)
         print(status)
         if n > 0:
             successes.append(sym)
