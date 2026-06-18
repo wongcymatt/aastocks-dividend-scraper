@@ -18,7 +18,9 @@ import csv
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
 
 import requests
 
@@ -184,6 +186,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="minimum delay between requests in seconds (default 1.5)")
     parser.add_argument("--delay-max", type=float, default=3.5,
                         help="maximum delay between requests in seconds (default 3.5)")
+    parser.add_argument("--workers", type=int, default=10,
+                        help="number of parallel workers (default 10)")
+    parser.add_argument("--resume", action="store_true", default=True,
+                        help="skip symbols with existing CSV output (default: enabled)")
+    parser.add_argument("--no-resume", dest="resume", action="store_false",
+                        help="disable resume - re-scrape all symbols")
     args = parser.parse_args(argv)
 
     if args.symbol:
@@ -201,10 +209,22 @@ def main(argv: list[str] | None = None) -> int:
     lang = args.lang
     transform = args.transform
 
+    if args.resume:
+        existing = {p.stem.removeprefix("dividend_")
+                    for p in args.output_dir.glob("dividend_*.csv")}
+        skipped = [s for s in symbols if s in existing]
+        if skipped:
+            print(f"Resume: skipping {len(skipped)} already-scraped symbol(s)")
+        symbols = [s for s in symbols if s not in existing]
+
+    if not symbols:
+        print("No symbols to scrape (all already done).")
+        return 0
+
     lang_label = "English" if lang == "en" else "Traditional Chinese"
     print(f"Scraping {len(symbols)} symbol(s) | layout={layout} | lang={lang_label} | transform={transform}")
     print(f"Output dir: {args.output_dir}")
-    print(f"Delay between requests: {args.delay_min:.1f}s - {args.delay_max:.1f}s")
+    print(f"Workers: {args.workers} | Delay: {args.delay_min:.1f}s - {args.delay_max:.1f}s")
     print()
 
     session = requests.Session()
@@ -212,21 +232,31 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[tuple[str, str]] = []
     total_rows = 0
 
-    for i, sym in enumerate(symbols, 1):
-        print(f"[{i}/{len(symbols)}] {sym} ...", end=" ", flush=True)
-        n, status = scrape_one(sym, layout, lang, args.output_dir, session, transform)
-        print(status)
-        if n > 0:
-            successes.append(sym)
-            total_rows += n
-        else:
-            failures.append((sym, status))
+    print_lock = Lock()
+    done_count = [0]  # mutable int for closure
 
-        if i < len(symbols):
-            iter_sleep(args.delay_min, args.delay_max)
+    def worker(sym: str) -> tuple[str, int, str]:
+        """Worker function for a single symbol (runs in thread pool)."""
+        time.sleep(random.uniform(args.delay_min, args.delay_max))
+        n, status = scrape_one(sym, layout, lang, args.output_dir, session, transform)
+        with print_lock:
+            done_count[0] += 1
+            print(f"[{done_count[0]}/{len(symbols)}] {sym} ... {status}")
+        return sym, n, status
+
+    total = len(symbols)
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {executor.submit(worker, sym): sym for sym in symbols}
+        for future in as_completed(futures):
+            sym, n, status = future.result()
+            if n > 0:
+                successes.append(sym)
+                total_rows += n
+            else:
+                failures.append((sym, status))
 
     print()
-    print(f"Done.  {len(successes)}/{len(symbols)} symbols OK, {total_rows} total rows scraped.")
+    print(f"Done.  {len(successes)}/{total} symbols OK, {total_rows} total rows scraped.")
     if failures:
         print("Failures:")
         for sym, reason in failures:
